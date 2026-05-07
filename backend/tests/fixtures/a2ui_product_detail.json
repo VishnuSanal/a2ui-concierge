@@ -1,0 +1,21 @@
+{
+  "component": "product-detail",
+  "product": {
+    "id": "bar-pendant",
+    "name": "Bar Pendant",
+    "price": 124,
+    "image_url": "https://images.example.com/jewelry/bar-pendant.jpg"
+  },
+  "variant_groups": [
+    {
+      "name": "finish",
+      "options": ["gold", "silver", "rose gold"],
+      "select": "single"
+    },
+    {
+      "name": "length",
+      "options": ["16\"", "18\""],
+      "select": "single"
+    }
+  ]
+}
