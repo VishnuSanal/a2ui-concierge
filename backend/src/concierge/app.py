@@ -1,7 +1,37 @@
+from __future__ import annotations
+import json
+from collections import defaultdict
 from fastapi import FastAPI
+from pydantic import BaseModel
+from sse_starlette.sse import EventSourceResponse
+from concierge.agent import GiftAgent
 
 app = FastAPI(title="A2UI Gift Concierge")
+
+_sessions: dict[str, GiftAgent] = defaultdict(lambda: GiftAgent())
+
+
+class ChatBody(BaseModel):
+    sessionId: str
+    userMessage: str
+
 
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/chat")
+async def chat(body: ChatBody) -> EventSourceResponse:
+    agent = _sessions[body.sessionId]
+
+    async def event_stream():
+        async for ev in agent.turn(body.userMessage):
+            if ev.kind == "end":
+                yield {"event": "end", "data": "{}"}
+            elif ev.kind == "a2ui":
+                yield {"event": "a2ui", "data": json.dumps(ev.payload)}
+            else:
+                yield {"event": "text", "data": json.dumps({"text": ev.payload})}
+
+    return EventSourceResponse(event_stream())
