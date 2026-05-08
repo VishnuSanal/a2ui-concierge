@@ -17,6 +17,9 @@ class ChatViewModel(private val repo: ChatRepository) : ViewModel() {
     private val _messages = MutableStateFlow<List<Message>>(emptyList())
     val messages: StateFlow<List<Message>> = _messages.asStateFlow()
 
+    private val _isThinking = MutableStateFlow(false)
+    val isThinking: StateFlow<Boolean> = _isThinking.asStateFlow()
+
     fun onA2uiAction(json: String) {
         val summary = "[ui-action] $json"
         send(summary)
@@ -27,43 +30,48 @@ class ChatViewModel(private val repo: ChatRepository) : ViewModel() {
         _messages.update { it + Message.User(UUID.randomUUID().toString(), text) }
 
         viewModelScope.launch {
-            var textBubbleId: String? = null
-            var a2uiBubbleId: String? = null
+            _isThinking.value = true
+            try {
+                var textBubbleId: String? = null
+                var a2uiBubbleId: String? = null
 
-            repo.send(text).collect { ev ->
-                when (ev) {
-                    is AgentEvent.Text -> {
-                        if (textBubbleId == null) {
-                            val id = UUID.randomUUID().toString()
-                            textBubbleId = id
-                            _messages.update { it + Message.AgentText(id, ev.text) }
-                        } else {
-                            _messages.update { list ->
-                                list.map { m ->
-                                    if (m is Message.AgentText && m.id == textBubbleId) {
-                                        m.copy(markdown = m.markdown + ev.text)
-                                    } else m
+                repo.send(text).collect { ev ->
+                    when (ev) {
+                        is AgentEvent.Text -> {
+                            if (textBubbleId == null) {
+                                val id = UUID.randomUUID().toString()
+                                textBubbleId = id
+                                _messages.update { it + Message.AgentText(id, ev.text) }
+                            } else {
+                                _messages.update { list ->
+                                    list.map { m ->
+                                        if (m is Message.AgentText && m.id == textBubbleId) {
+                                            m.copy(markdown = m.markdown + ev.text)
+                                        } else m
+                                    }
                                 }
                             }
                         }
-                    }
-                    is AgentEvent.A2ui -> {
-                        if (a2uiBubbleId == null) {
-                            val id = UUID.randomUUID().toString()
-                            a2uiBubbleId = id
-                            _messages.update { it + Message.AgentA2ui(id, listOf(ev.payload)) }
-                        } else {
-                            _messages.update { list ->
-                                list.map { m ->
-                                    if (m is Message.AgentA2ui && m.id == a2uiBubbleId) {
-                                        m.copy(fragments = m.fragments + ev.payload)
-                                    } else m
+                        is AgentEvent.A2ui -> {
+                            if (a2uiBubbleId == null) {
+                                val id = UUID.randomUUID().toString()
+                                a2uiBubbleId = id
+                                _messages.update { it + Message.AgentA2ui(id, listOf(ev.payload)) }
+                            } else {
+                                _messages.update { list ->
+                                    list.map { m ->
+                                        if (m is Message.AgentA2ui && m.id == a2uiBubbleId) {
+                                            m.copy(fragments = m.fragments + ev.payload)
+                                        } else m
+                                    }
                                 }
                             }
                         }
+                        AgentEvent.End -> Unit
                     }
-                    AgentEvent.End -> Unit
                 }
+            } finally {
+                _isThinking.value = false
             }
         }
     }
