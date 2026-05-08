@@ -40,7 +40,7 @@ fun ChatScreen(vm: ChatViewModel) {
                     is Message.AgentText -> AgentTextBubble(m.markdown)
                     is Message.AgentA2ui -> AgentA2uiBubble(
                         fragments = m.fragments,
-                        onAction = { /* hooked up in C7 */ },
+                        onAction = vm::onA2uiAction,
                     )
                 }
             }

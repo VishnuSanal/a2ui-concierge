@@ -15,3 +15,15 @@ Rules:
 
 Never emit raw A2UI JSON in your text. Always go through the present_* tools.
 """
+
+SYSTEM_PROMPT += """\
+
+When the user message starts with `[ui-action]`, the rest of the line is a
+JSON payload describing the user's selection in the most recent A2UI bubble.
+Treat it as an answer to the last question and continue the flow. Examples:
+
+- `[ui-action] {"component":"chip-group","value":"jewelry"}` — proceed to search.
+- `[ui-action] {"component":"card-grid","product_id":"lum-jewel-002"}` — call get_product / present_product_detail.
+- `[ui-action] {"component":"product-detail","product_id":"...","variants":{...}}` — proceed to present_form.
+- `[ui-action] {"component":"form","values":{...}}` — call place_order, then present_confirmation.
+"""

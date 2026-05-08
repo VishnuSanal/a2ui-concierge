@@ -17,6 +17,11 @@ class ChatViewModel(private val repo: ChatRepository) : ViewModel() {
     private val _messages = MutableStateFlow<List<Message>>(emptyList())
     val messages: StateFlow<List<Message>> = _messages.asStateFlow()
 
+    fun onA2uiAction(json: String) {
+        val summary = "[ui-action] $json"
+        send(summary)
+    }
+
     fun send(text: String) {
         if (text.isBlank()) return
         _messages.update { it + Message.User(UUID.randomUUID().toString(), text) }
