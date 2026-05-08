@@ -3,7 +3,7 @@ package com.diegoz.a2uiconcierge
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.material3.MaterialTheme
+import com.diegoz.a2uiconcierge.theme.AppTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -16,7 +16,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme {
+            AppTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     Text("A2UI Concierge", modifier = Modifier.padding(24.dp))
                 }
