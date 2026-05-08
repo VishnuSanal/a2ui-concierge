@@ -1,10 +1,14 @@
 from __future__ import annotations
 import json
 from collections import defaultdict
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
-from concierge.agent import GiftAgent
+
+load_dotenv()  # reads backend/.env so ANTHROPIC_API_KEY etc. are set before the SDK reads them
+
+from concierge.agent import GiftAgent  # noqa: E402 — must import after load_dotenv
 
 app = FastAPI(title="A2UI Gift Concierge")
 
