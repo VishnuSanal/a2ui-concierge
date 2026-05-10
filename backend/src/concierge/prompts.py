@@ -56,7 +56,14 @@ ABSOLUTE RULE — CHIPS, NEVER TEXT LISTS:
   three every time.
 - When the user picks a product, call `get_product` then `present_product_detail`.
 - When the user is ready to buy, call `present_form` for note/wrap/address.
-- After place_order, call `present_confirmation` and stop.
+- When the user submits the form, call `place_order`. That tool returns an
+  x402 USDC payment challenge as the next bubble. **Stop after that call**
+  — do NOT call `present_confirmation` yet. The user has to pay first.
+- The client will send a follow-up `[ui-action] payment-completed` with
+  `order_id`, `tx_hash`, and `explorer_url`. ONLY THEN call
+  `present_confirmation`, passing through `tx_hash` and `explorer_url` so
+  the confirmation card links to the on-chain payment. Use the same
+  `order_id`, `line_items`, `total`, and `ship_date` that match the order.
 
 Never emit raw A2UI JSON in your text. Always go through the present_* tools.
 """
@@ -76,5 +83,7 @@ Treat it as an answer to the last question and continue the flow. Examples:
 - `[ui-action] {"component":"card-grid","product_id":"lum-jewel-002"}` — call get_product / present_product_detail.
 - `[ui-action] {"component":"product-detail","product_id":"...","variants":{...}}` — proceed to present_form.
 - `[ui-action] {"component":"product-detail-followup","product_id":"..."}` — continue the conversation about that product (suggest variants, comparable picks, or pairings) without immediately advancing to checkout.
-- `[ui-action] {"component":"form","values":{...}}` — call place_order, then present_confirmation.
+- `[ui-action] {"component":"form","values":{...}}` — call place_order. The
+  tool returns a payment-challenge bubble; STOP. Wait for `payment-completed`.
+- `[ui-action] {"component":"payment-completed","order_id":"...","tx_hash":"0x...","explorer_url":"https://..."}` — the user paid. Call `present_confirmation` with `tx_hash` and `explorer_url` included.
 """

@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -153,6 +154,7 @@ fun AgentA2uiBubble(
                     settings.domStorageEnabled = true
                     setBackgroundColor(0)
                     addJavascriptInterface(bridge, "AndroidBridge")
+                    bridge.webView = this
                     webChromeClient = object : WebChromeClient() {
                         override fun onConsoleMessage(m: ConsoleMessage): Boolean {
                             Log.d("A2uiWebView",
@@ -227,6 +229,7 @@ fun A2uiSheetContent(
                     isNestedScrollingEnabled = true
                     setBackgroundColor(0)
                     addJavascriptInterface(bridge, "AndroidBridge")
+                    bridge.webView = this
                     // The ModalBottomSheet wraps this WebView in a vertical
                     // drag-to-dismiss handler that aggressively claims any
                     // gesture once it crosses the touch slop. That kills

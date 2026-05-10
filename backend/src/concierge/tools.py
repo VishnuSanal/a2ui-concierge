@@ -1,8 +1,7 @@
 from __future__ import annotations
 from typing import Any
-import uuid
 from datetime import date, timedelta
-from concierge import catalog, a2ui
+from concierge import catalog, a2ui, payments
 
 TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
@@ -29,7 +28,13 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "place_order",
-        "description": "Place a (mock) order for a configured product.",
+        "description": (
+            "Stage an order and return an x402 USDC payment challenge as the "
+            "next agent bubble. The user signs and pays from their on-device "
+            "wallet, then the client emits `[ui-action] payment-completed` "
+            "with the tx hash. Only after that does the agent call "
+            "present_confirmation."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -71,7 +76,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "Use a short `section` heading (e.g., 'Cozy & Self-Care') when this is "
             "one of several themed rails in the same response. Pass 4-6 items per "
             "section. Re-call this tool for each themed group, with a short text "
-            "paragraph between sections."
+            "paragraph between sections.\n\n"
+            "Items: pass ONLY the `id` (must be from search_catalog results) and "
+            "optionally a one-sentence `why` for that pick. All product display "
+            "data (name, price, image, vendor) comes from the catalog — never "
+            "supply it."
         ),
         "input_schema": {
             "type": "object",
@@ -84,14 +93,9 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                         "type": "object",
                         "properties": {
                             "id": {"type": "string"},
-                            "name": {"type": "string"},
-                            "price": {"type": "number"},
-                            "sale_price": {"type": "number"},
-                            "vendor": {"type": "string"},
-                            "image_url": {"type": "string"},
                             "why": {"type": "string"},
                         },
-                        "required": ["id", "name", "price", "image_url"],
+                        "required": ["id"],
                     },
                 },
             },
@@ -120,23 +124,20 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "present_confirmation",
-        "description": "Render the final order confirmation bubble.",
+        "description": (
+            "Render the final order confirmation bubble. Pass `order_id`, "
+            "`tx_hash`, and `explorer_url` from the `[ui-action] payment-completed` "
+            "payload. Order line items, total, and ship date come from the "
+            "server-side order record — do not supply them."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "order_id": {"type": "string"},
-                "line_items": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {"label": {"type": "string"}, "amount": {"type": "number"}},
-                        "required": ["label", "amount"],
-                    },
-                },
-                "total": {"type": "number"},
-                "ship_date": {"type": "string"},
+                "tx_hash": {"type": "string"},
+                "explorer_url": {"type": "string"},
             },
-            "required": ["order_id", "line_items", "total", "ship_date"],
+            "required": ["order_id"],
         },
     },
 ]
@@ -148,26 +149,63 @@ def run_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
     if name == "search_catalog":
         return {"results": catalog.search(**args)}
     if name == "get_product":
-        return catalog.get(args["product_id"])
+        try:
+            return catalog.get(args["product_id"])
+        except KeyError:
+            # Return error inline so the agent can self-correct instead of the
+            # whole turn aborting on KeyError. The model should call
+            # search_catalog and pick a real id.
+            return {"error": "unknown product_id", "product_id": args["product_id"]}
     if name == "place_order":
-        order_id = f"A2UI-{str(uuid.uuid4())[:4].upper()}"
+        product = catalog.get(args["product_id"])
+        product_price = float(product.get("sale_price") or product["price"])
+        gift_wrap_fee = 8.0 if args.get("gift_wrap") else 0.0
+        total = round(product_price + gift_wrap_fee, 2)
+        line_items: list[tuple[str, float]] = [(product["name"], product_price)]
+        if gift_wrap_fee:
+            line_items.append(("Gift wrap", gift_wrap_fee))
         ship_date = (date.today() + timedelta(days=4)).strftime("%a, %b %d")
-        return {"order_id": order_id, "ship_date": ship_date}
+        challenge = payments.build_challenge(
+            total_dollars=total,
+            label=f"Lumen Goods — {product['name']}",
+        )
+        # Stash the order details so the confirmation bubble (after settle)
+        # can be rebuilt deterministically.
+        record = payments.get_order(challenge["order_id"])
+        if record is not None:
+            record["line_items"] = line_items
+            record["total"] = total
+            record["ship_date"] = ship_date
+            record["product_id"] = product["id"]
+        return {"_a2ui": a2ui.payment_challenge(
+            challenge=challenge,
+            line_items=line_items,
+        )}
     if name == "present_chips":
         return {"_a2ui": a2ui.chips(
             question=args["question"],
             options=[(o["value"], o["label"]) for o in args["options"]],
         )}
     if name == "present_products":
-        # Hydrate items from the catalog so vendor/sale_price/images stay
-        # authoritative even if the model under-specifies fields.
-        hydrated = []
+        # Strict hydration: drop items whose IDs aren't in the catalog. The
+        # alternative (keeping the model's fabricated entry) renders cards the
+        # agent can't navigate from — `get_product` immediately fails. Better
+        # to skip and let the agent recover by re-searching.
+        hydrated: list[dict[str, Any]] = []
+        dropped: list[str] = []
         for item in args["items"]:
             try:
                 full = catalog.get(item["id"])
-                hydrated.append({**full, "why": item.get("why", "")})
             except KeyError:
-                hydrated.append(item)
+                dropped.append(item.get("id", "<no id>"))
+                continue
+            hydrated.append({**full, "why": item.get("why", "")})
+        if not hydrated:
+            return {
+                "error": "no valid product ids",
+                "hint": "Call search_catalog first and only use ids returned in its results.",
+                "dropped": dropped,
+            }
         return {"_a2ui": a2ui.products(
             section=args.get("section"),
             reasoning=args["reasoning"],
@@ -187,10 +225,16 @@ def run_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
         fields.append({"type": "address", "name": "ship_to", "label": "Ship to"})
         return {"_a2ui": a2ui.form(fields=fields)}
     if name == "present_confirmation":
+        order_id = args["order_id"]
+        record = payments.get_order(order_id)
+        if record is None:
+            return {"error": "unknown order_id", "order_id": order_id}
         return {"_a2ui": a2ui.confirmation(
-            order_id=args["order_id"],
-            line_items=[(li["label"], li["amount"]) for li in args["line_items"]],
-            total=args["total"],
-            ship_date=args["ship_date"],
+            order_id=order_id,
+            line_items=record["line_items"],
+            total=record["total"],
+            ship_date=record["ship_date"],
+            tx_hash=args.get("tx_hash") or record.get("tx_hash"),
+            explorer_url=args.get("explorer_url"),
         )}
     raise ValueError(f"Unknown tool: {name}")

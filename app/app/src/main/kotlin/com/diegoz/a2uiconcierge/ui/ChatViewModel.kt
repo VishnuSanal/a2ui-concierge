@@ -27,13 +27,32 @@ class ChatViewModel(private val repo: ChatRepository) : ViewModel() {
     private val _productDetail = MutableStateFlow<JsonObject?>(null)
     val productDetail: StateFlow<JsonObject?> = _productDetail.asStateFlow()
 
+    /** x402 payment-challenge bubble lifted into its own modal sheet so the
+     * payment moment gets focus (and the sheet auto-dismisses on success). */
+    private val _paymentChallenge = MutableStateFlow<JsonObject?>(null)
+    val paymentChallenge: StateFlow<JsonObject?> = _paymentChallenge.asStateFlow()
+
+    /** Inline tx-detail sheet, opened from a tap on the confirmation card's
+     * on-chain payment row. Pure client-side — no agent round-trip. */
+    private val _txDetail = MutableStateFlow<JsonObject?>(null)
+    val txDetail: StateFlow<JsonObject?> = _txDetail.asStateFlow()
+
     fun onA2uiAction(json: String) {
+        // Tx-detail tap is a pure UI navigation — open the sheet, don't
+        // forward to the agent and don't render a "Selection" user bubble.
+        if (isTxDetailOpen(json)) {
+            _txDetail.value = parseToObject(json)?.let { buildTxDetailFragment(it) }
+            return
+        }
         // Close X on the product-detail gallery is a pure UI dismiss — don't
         // forward to the agent and don't render a "Selection" user bubble.
         if (isProductDetailCloseOnly(json)) {
             _productDetail.value = null
             return
         }
+        // `payment-completed` arrives after a successful settle. Dismiss the
+        // payment sheet immediately; the agent will render the confirmation.
+        if (isPaymentCompleted(json)) _paymentChallenge.value = null
         val display = humanizeAction(json)
         _messages.update { it + Message.User(UUID.randomUUID().toString(), display) }
         // Follow-up / Visit dismiss the sheet; "Add to Order" also dismisses
@@ -45,6 +64,14 @@ class ChatViewModel(private val repo: ChatRepository) : ViewModel() {
     fun dismissProductDetail() {
         _productDetail.value = null
     }
+
+    fun dismissPaymentChallenge() {
+        // User abandoned the payment. We don't notify the agent — the order
+        // record stays valid until its deadline (5 min); they can ask again.
+        _paymentChallenge.value = null
+    }
+
+    fun dismissTxDetail() { _txDetail.value = null }
 
     fun send(text: String) {
         if (text.isBlank()) return
@@ -82,10 +109,10 @@ class ChatViewModel(private val repo: ChatRepository) : ViewModel() {
                             // Start a fresh text bubble next time.
                             textBubbleId = null
                             val component = ev.payload["component"]?.jsonPrimitive?.content
-                            if (component == "product-detail") {
-                                _productDetail.value = ev.payload
-                            } else {
-                                _messages.update {
+                            when (component) {
+                                "product-detail" -> _productDetail.value = ev.payload
+                                "payment-challenge" -> _paymentChallenge.value = ev.payload
+                                else -> _messages.update {
                                     it + Message.AgentA2ui(
                                         UUID.randomUUID().toString(),
                                         listOf(ev.payload),
@@ -127,9 +154,15 @@ class ChatViewModel(private val repo: ChatRepository) : ViewModel() {
             }
             "form" -> "Place order"
             "confirmation-card" -> "Confirmed"
+            "payment-completed" -> "Paid"
             else -> "Selection"
         }
     } catch (_: Exception) { "Selection" }
+
+    private fun isPaymentCompleted(json: String): Boolean = try {
+        val obj = Json.parseToJsonElement(json) as? JsonObject
+        obj?.get("component")?.jsonPrimitive?.content == "payment-completed"
+    } catch (_: Exception) { false }
 
     private fun isProductDetailCloseOnly(json: String): Boolean = try {
         val obj = Json.parseToJsonElement(json) as? JsonObject
@@ -145,4 +178,26 @@ class ChatViewModel(private val repo: ChatRepository) : ViewModel() {
             else -> false
         }
     } catch (_: Exception) { false }
+
+    private fun isTxDetailOpen(json: String): Boolean = try {
+        val obj = Json.parseToJsonElement(json) as? JsonObject
+        obj?.get("component")?.jsonPrimitive?.content == "tx-detail-open"
+    } catch (_: Exception) { false }
+
+    private fun parseToObject(json: String): JsonObject? = try {
+        Json.parseToJsonElement(json) as? JsonObject
+    } catch (_: Exception) { null }
+
+    /** Build the `tx-detail` A2UI fragment from a `tx-detail-open` action so
+     * the existing A2uiSheetContent / WebView pipeline can render it without
+     * a server round-trip. Same field names the Lit component expects. */
+    private fun buildTxDetailFragment(action: JsonObject): JsonObject {
+        val out = mutableMapOf<String, kotlinx.serialization.json.JsonElement>()
+        out["component"] = kotlinx.serialization.json.JsonPrimitive("tx-detail")
+        for ((k, v) in action) {
+            if (k == "component") continue
+            out[k] = v
+        }
+        return JsonObject(out)
+    }
 }

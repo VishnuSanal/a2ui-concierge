@@ -1,14 +1,16 @@
 from __future__ import annotations
 import json
 from collections import defaultdict
+from typing import Any
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 load_dotenv()  # reads backend/.env so ANTHROPIC_API_KEY etc. are set before the SDK reads them
 
 from concierge.agent import GiftAgent  # noqa: E402 — must import after load_dotenv
+from concierge import payments  # noqa: E402
 
 app = FastAPI(title="A2UI Gift Concierge")
 
@@ -47,3 +49,22 @@ async def chat(body: ChatBody) -> EventSourceResponse:
             yield {"event": "end", "data": "{}"}
 
     return EventSourceResponse(event_stream())
+
+
+class SettleBody(BaseModel):
+    order_id: str
+    envelope: dict[str, Any]
+
+
+@app.post("/x402/settle")
+async def x402_settle(body: SettleBody) -> dict[str, Any]:
+    """Receive a signed EIP-3009 envelope from the client, settle on-chain
+    (or mock), and return the tx hash + explorer URL. The client then sends
+    a follow-up `[ui-action] payment-completed` to /chat so the agent can
+    render the confirmation card."""
+    try:
+        return await payments.settle(order_id=body.order_id, signed_envelope=body.envelope)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"settle failed: {e}")

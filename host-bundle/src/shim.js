@@ -4,6 +4,8 @@ import "./components/card-grid.js";
 import "./components/product-detail.js";
 import "./components/concierge-form.js";
 import "./components/confirmation-card.js";
+import "./components/payment-challenge.js";
+import "./components/tx-detail.js";
 
 const COMPONENT_TAG = {
   "chip-group": "a2ui-chip-group",
@@ -11,6 +13,8 @@ const COMPONENT_TAG = {
   "product-detail": "a2ui-product-detail",
   "form": "a2ui-form",
   "confirmation-card": "a2ui-confirmation-card",
+  "payment-challenge": "a2ui-payment-challenge",
+  "tx-detail": "a2ui-tx-detail",
 };
 
 function root() {
@@ -79,7 +83,7 @@ function reportSize() {
   // the correct dp value (Compose density divides by devicePixelRatio).
   const dpr = window.devicePixelRatio || 1;
   const devicePx = Math.ceil(cssClamped * dpr);
-  dlog(`reportSize: cssH=${cssClamped} dpr=${dpr} -> ${devicePx}px`);
+  dlog(`reportSize: sH=${sH} oH=${oH} cssH=${cssClamped} dpr=${dpr} -> ${devicePx}px`);
   if (devicePx === lastReported) return;
   lastReported = devicePx;
   if (window.AndroidBridge?.onResize) window.AndroidBridge.onResize(devicePx);

@@ -63,11 +63,36 @@ def confirmation(
     line_items: Iterable[tuple[str, float]],
     total: float,
     ship_date: str,
+    tx_hash: str | None = None,
+    explorer_url: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    out: dict[str, Any] = {
         "component": "confirmation-card",
         "order_id": order_id,
         "items": [{"label": label, "amount": amount} for label, amount in line_items],
         "total": total,
         "ship_date": ship_date,
+    }
+    if tx_hash:
+        out["tx_hash"] = tx_hash
+    if explorer_url:
+        out["explorer_url"] = explorer_url
+    return out
+
+
+def payment_challenge(
+    *,
+    challenge: dict[str, Any],
+    line_items: Iterable[tuple[str, float]],
+) -> dict[str, Any]:
+    """Render an x402 payment sheet. The Android client reads ``challenge``
+    fields to build an EIP-3009 transferWithAuthorization, biometric-signs it,
+    and POSTs to /x402/settle. ``line_items`` is shown as the order summary."""
+    return {
+        "component": "payment-challenge",
+        "order_id": challenge["order_id"],
+        "label": challenge["label"],
+        "amount_display": challenge["amount_display"],
+        "items": [{"label": label, "amount": amount} for label, amount in line_items],
+        "challenge": challenge,
     }

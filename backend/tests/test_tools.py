@@ -9,15 +9,24 @@ def test_get_product_returns_id():
     out = run_tool("get_product", {"product_id": "lum-jewel-001"})
     assert out["id"] == "lum-jewel-001"
 
-def test_place_order_assigns_id_and_date():
+def test_place_order_returns_payment_challenge():
     out = run_tool("place_order", {
         "product_id": "lum-jewel-001",
         "variant_options": {"finish": "silver", "length": "16\""},
         "gift_wrap": True,
         "address": "235 Pine St, Brooklyn NY",
     })
-    assert out["order_id"].startswith("A2UI-")
-    assert "ship_date" in out
+    payload = out["_a2ui"]
+    assert payload["component"] == "payment-challenge"
+    assert payload["order_id"].startswith("A2UI-")
+    challenge = payload["challenge"]
+    assert challenge["amount_units"] > 0
+    assert challenge["asset"].startswith("0x") and len(challenge["asset"]) == 42
+    assert challenge["nonce"].startswith("0x") and len(challenge["nonce"]) == 66
+    assert challenge["valid_before"] > challenge["valid_after"]
+    # Total = sale_price (or price) + $8 gift wrap; reflected in line items.
+    labels = [li["label"] for li in payload["items"]]
+    assert "Gift wrap" in labels
 
 def test_present_chips_returns_a2ui_payload():
     out = run_tool("present_chips", {
@@ -32,6 +41,38 @@ def test_present_form_default_includes_three_fields():
     fields = out["_a2ui"]["fields"]
     names = [f["name"] for f in fields]
     assert names == ["gift_wrap", "note", "ship_to"]
+
+
+def test_x402_settle_returns_tx_hash():
+    """Mock settle path: place an order, then settle returns a tx hash and
+    flips the order record to settled. Idempotent on repeat call."""
+    import asyncio
+    from concierge import payments
+
+    out = run_tool("place_order", {
+        "product_id": "lum-jewel-001",
+        "variant_options": {"finish": "silver"},
+        "gift_wrap": False,
+        "address": "1 Main St",
+    })
+    order_id = out["_a2ui"]["order_id"]
+
+    settled = asyncio.run(payments.settle(order_id=order_id, signed_envelope={"x": "stub"}))
+    assert settled["tx_hash"].startswith("0x") and len(settled["tx_hash"]) == 66
+    assert "basescan" in settled["explorer_url"]
+
+    # Idempotent: same tx_hash on a second call.
+    again = asyncio.run(payments.settle(order_id=order_id, signed_envelope={"x": "stub"}))
+    assert again["tx_hash"] == settled["tx_hash"]
+
+
+def test_x402_settle_unknown_order_raises():
+    import asyncio
+    import pytest as _pt
+    from concierge import payments
+    with _pt.raises(ValueError):
+        asyncio.run(payments.settle(order_id="A2UI-DOES-NOT-EXIST", signed_envelope={}))
+
 
 
 import json

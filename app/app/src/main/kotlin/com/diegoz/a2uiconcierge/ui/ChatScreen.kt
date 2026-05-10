@@ -45,6 +45,8 @@ fun ChatScreen(vm: ChatViewModel) {
     val messages by vm.messages.collectAsState()
     val isThinking by vm.isThinking.collectAsState()
     val productDetail by vm.productDetail.collectAsState()
+    val paymentChallenge by vm.paymentChallenge.collectAsState()
+    val txDetail by vm.txDetail.collectAsState()
     val listState = rememberLazyListState()
 
     LaunchedEffect(messages.size, isThinking) {
@@ -131,6 +133,45 @@ fun ChatScreen(vm: ChatViewModel) {
         ) {
             A2uiSheetContent(
                 fragment = sheetFragment,
+                onAction = vm::onA2uiAction,
+            )
+        }
+    }
+
+    // Payment-challenge sheet. Auto-opens when the agent emits the bubble;
+    // ChatViewModel sets _paymentChallenge.value = null on `payment-completed`,
+    // so successful settlement closes this sheet automatically.
+    val paymentFragment = paymentChallenge
+    if (paymentFragment != null) {
+        val paymentSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
+            onDismissRequest = { vm.dismissPaymentChallenge() },
+            sheetState = paymentSheetState,
+            containerColor = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp),
+            tonalElevation = 0.dp,
+        ) {
+            A2uiSheetContent(
+                fragment = paymentFragment,
+                onAction = vm::onA2uiAction,
+            )
+        }
+    }
+
+    // Transaction-detail sheet — opened from a tap on the confirmation card's
+    // on-chain payment row. Pure client-side; no agent involvement.
+    val txFragment = txDetail
+    if (txFragment != null) {
+        val txSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
+            onDismissRequest = { vm.dismissTxDetail() },
+            sheetState = txSheetState,
+            containerColor = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp),
+            tonalElevation = 0.dp,
+        ) {
+            A2uiSheetContent(
+                fragment = txFragment,
                 onAction = vm::onA2uiAction,
             )
         }
