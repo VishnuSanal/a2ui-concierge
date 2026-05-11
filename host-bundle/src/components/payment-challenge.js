@@ -124,16 +124,7 @@ export class PaymentChallenge extends LitElement {
     this.status = "paying";
     this.error = "";
     try {
-      // Web doesn't have hardware key custody; the backend's mock settler
-      // doesn't validate the envelope, so a placeholder is fine here.
-      // Phase 2: Android replaces this with a real signed EIP-3009 envelope.
-      const envelope = {
-        scheme: "exact",
-        kind: "stub-web",
-        order_id: this.order_id,
-        nonce: this.challenge?.nonce,
-      };
-      const data = await this._settle(envelope);
+      const data = await this._settle();
       this.status = "done";
       window.AndroidBridge?.onAction(JSON.stringify({
         component: "payment-completed",
@@ -148,14 +139,20 @@ export class PaymentChallenge extends LitElement {
   }
 
   // Two settlement paths:
-  //   - Android WebView: page lives at file:///android_asset/, can't fetch
-  //     cleartext HTTP cross-origin. Bridge through Kotlin (AndroidBridge.settle)
-  //     so Kotlin's OkHttp owns the call. Phase 2 hooks here to sign with
-  //     StrongBox before forwarding.
-  //   - Browser: hit /x402/settle relative (Vite proxies in dev, host
-  //     same-origin in prod).
-  async _settle(envelope) {
+  //   - Android WebView: hand the raw *challenge* to Kotlin, which signs
+  //     it with the StrongBox-bound wallet (biometric per op) and POSTs
+  //     the canonical envelope to /x402/settle. The Kotlin side computes
+  //     `from` from the seed; the WebView does not.
+  //   - Browser: no hardware key custody, so post a stub envelope to
+  //     /x402/settle. The backend mock-settles by default; flipping
+  //     X402_SETTLE_REAL=1 would reject this with `invalid_exact_evm_signature`,
+  //     which is the correct production behavior — the browser path is
+  //     for demo-mode only.
+  async _settle() {
     if (window.AndroidBridge?.settle) {
+      // The challenge prop is the full backend dict (chain_id, asset,
+      // pay_to, amount_units, valid_after/before, nonce, extra). Hand it
+      // to Kotlin verbatim; the signer reads the fields it needs.
       return new Promise((resolve, reject) => {
         const cb = `__settle_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
         window[cb] = (result) => {
@@ -165,17 +162,23 @@ export class PaymentChallenge extends LitElement {
           resolve(result);
         };
         try {
-          window.AndroidBridge.settle(this.order_id, JSON.stringify(envelope), cb);
+          window.AndroidBridge.settle(this.order_id, JSON.stringify(this.challenge || {}), cb);
         } catch (e) {
           delete window[cb];
           reject(e);
         }
       });
     }
+    const stubEnvelope = {
+      scheme: "exact",
+      kind: "stub-web",
+      order_id: this.order_id,
+      nonce: this.challenge?.nonce,
+    };
     const res = await fetch("/x402/settle", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ order_id: this.order_id, envelope }),
+      body: JSON.stringify({ order_id: this.order_id, envelope: stubEnvelope }),
     });
     if (!res.ok) {
       const detail = await res.text().catch(() => "");

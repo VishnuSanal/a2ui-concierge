@@ -1,9 +1,14 @@
 package com.diegoz.a2uiconcierge.a2ui
 
+import android.content.Context
+import android.content.ContextWrapper
 import android.util.Log
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
+import androidx.fragment.app.FragmentActivity
 import com.diegoz.a2uiconcierge.BuildConfig
+import com.diegoz.a2uiconcierge.x402.SecureWallet
+import com.diegoz.a2uiconcierge.x402.X402Signer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
@@ -13,6 +18,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
 
 class A2uiBridge {
     val actions = Channel<String>(capacity = Channel.UNLIMITED)
@@ -41,20 +47,32 @@ class A2uiBridge {
     }
 
     /**
-     * x402 settle bridge. The web component cannot fetch the backend directly
-     * from a file:// origin (Android blocks cleartext + cross-origin from the
-     * WebView), so the JS calls into Kotlin and Kotlin owns the HTTP. Result
-     * is delivered back to the JS callback via evaluateJavascript.
+     * x402 settle bridge. The JS gives us the *unsigned* challenge object;
+     * Kotlin owns the EIP-3009 signing (StrongBox-wrapped seed +
+     * biometric per op) and the HTTP POST to /x402/settle. Result lands
+     * back in JS via `evaluateJavascript` on a window-scoped callback.
      *
-     * Phase 2 hooks here: replace `signed_envelope = envelopeJson` with a
-     * StrongBox-backed EIP-3009 signature before posting.
+     * Two prompts on first use: one to create the wallet (set up the
+     * StrongBox key + encrypt the seed), one to decrypt for signing.
+     * Every subsequent payment is a single prompt.
      */
     @JavascriptInterface
-    fun settle(orderId: String, envelopeJson: String, callbackName: String) {
+    fun settle(orderId: String, challengeJson: String, callbackName: String) {
         Log.d(TAG, "settle: order=$orderId cb=$callbackName")
         scope.launch {
             val resultJson = try {
-                val body = """{"order_id":"${orderId.replace("\"", "\\\"")}","envelope":$envelopeJson}"""
+                val activity = currentActivity()
+                    ?: error("No FragmentActivity in WebView context")
+                val challenge = JSONObject(challengeJson)
+                val wallet = SecureWallet(activity)
+                if (!wallet.hasWallet()) wallet.createWallet(activity)
+                val envelope = wallet.withSeed(activity) { seed ->
+                    X402Signer(seed).signEnvelope(challenge)
+                }
+                val body = JSONObject().apply {
+                    put("order_id", orderId)
+                    put("envelope", envelope)
+                }.toString()
                 val req = Request.Builder()
                     .url("$BACKEND_BASE_URL/x402/settle")
                     .post(body.toRequestBody("application/json".toMediaType()))
@@ -64,7 +82,8 @@ class A2uiBridge {
                     if (resp.isSuccessful) text else jsonError("HTTP ${resp.code}: $text")
                 }
             } catch (e: Exception) {
-                jsonError(e.message ?: "fetch failed")
+                Log.e(TAG, "settle failed", e)
+                jsonError(e.message ?: e::class.java.simpleName)
             }
 
             withContext(Dispatchers.Main) {
@@ -74,6 +93,16 @@ class A2uiBridge {
                 )
             }
         }
+    }
+
+    /** Unwrap the WebView's context chain to find the hosting activity. */
+    private fun currentActivity(): FragmentActivity? {
+        var c: Context = webView?.context ?: return null
+        while (c is ContextWrapper) {
+            if (c is FragmentActivity) return c
+            c = c.baseContext
+        }
+        return null
     }
 
     private fun jsonError(msg: String): String {

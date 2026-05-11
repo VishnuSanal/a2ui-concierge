@@ -40,6 +40,17 @@ android {
             isMinifyEnabled = false
         }
     }
+
+    // web3j drags in two tuweni jars that each ship a META-INF/DISCLAIMER —
+    // the Android packager refuses duplicates. Pick the first; the content
+    // is identical Apache-2 boilerplate.
+    packaging {
+        resources {
+            pickFirsts.add("META-INF/DISCLAIMER")
+            pickFirsts.add("META-INF/INDEX.LIST")
+            pickFirsts.add("META-INF/io.netty.versions.properties")
+        }
+    }
 }
 
 dependencies {
@@ -54,6 +65,11 @@ dependencies {
     // Biometric-bound StrongBox key wrap for the x402 wallet seed.
     implementation("androidx.biometric:biometric:1.1.0")
     implementation("androidx.fragment:fragment-ktx:1.8.5")
+    // EIP-712 hashing + secp256k1 signing for the x402 EIP-3009 envelope.
+    // web3j hauls in Bouncy Castle, Jackson, and a slf4j contract; the
+    // runtime-only slf4j-nop suppresses the "no implementation" warning.
+    implementation("org.web3j:core:4.12.2")
+    runtimeOnly("org.slf4j:slf4j-nop:2.0.13")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.github.jeziellago:compose-markdown:0.5.4")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
