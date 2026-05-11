@@ -20,6 +20,70 @@ Same A2UI components, two surfaces — no rewrites between them.
 | :---: | :---: |
 | ▶ **[Android walkthrough](https://www.youtube.com/watch?v=eTi_LHUJs5Y)** — Compose chrome + Lit components in a WebView. | ▶ **[Web walkthrough](https://www.youtube.com/watch?v=65klmTq2cLQ)** — same Lit bundle, browser-native. |
 
+## Variations
+
+The same demo runs in several settlement modes, all on one codebase. Each is a
+config flip — same app, same components, same agent. The matrix below tracks
+what's on `main` versus what's still on a branch.
+
+| Variation                       | Branch / flag                  | Settlement                                  | Authorization                                  |
+| ------------------------------- | ------------------------------ | ------------------------------------------- | ---------------------------------------------- |
+| Default shopping                | `main`                         | mocked x402 challenge                       | per-cart tap                                   |
+| **x402 on-chain (Base Sepolia)**| `main` + `X402_SETTLE_REAL=1`  | real EIP-3009 → public x402 facilitator     | per-cart tap + StrongBox biometric             |
+| AP2 HITL (in progress)          | `explore/ap2`                  | x402 settlement                             | cryptographic Cart Mandate (per-cart sign)     |
+| AP2 non-HITL (planned)          | TBD                            | x402 settlement                             | Intent Mandate (delegated, no per-cart consent)|
+
+### x402 on-chain mode
+
+The Android app can perform **real** Base Sepolia USDC settlements. Tap Pay
+→ biometric prompt → a StrongBox-bound private key signs an EIP-3009
+`transferWithAuthorization` → the backend forwards the signed envelope to the
+public x402 facilitator → on-chain tx settles → the confirmation card surfaces
+the real BaseScan link.
+
+To enable, add the env vars to `backend/.env`:
+
+```shell
+X402_SETTLE_REAL=1
+X402_PAY_TO_ADDRESS=0x...               # recipient wallet you control
+# Optional overrides:
+# X402_NETWORK=base-sepolia
+# X402_CHAIN_ID=84532
+# X402_USDC_ADDRESS=0x036CbD53842c5426634e7929541eC2318f3dCF7e
+# X402_FACILITATOR_BASE=https://www.x402.org/facilitator
+```
+
+Fund the **payer** wallet — the address the Android client derives from its
+StrongBox-bound seed on first wallet creation. It's printed in the backend log
+the first time you tap Pay, on a line that looks like:
+
+```
+[x402] envelope from='0x3c70...6454' to='0x...' value='1000000' sig=0x...
+```
+
+Send Base Sepolia USDC to that `from` address with the
+[Coinbase Developer Platform faucet](https://portal.cdp.coinbase.com/products/faucet)
+(select Base Sepolia → USDC → paste the payer address). EIP-3009 is
+gas-abstracted: the facilitator pays gas, so the payer only needs USDC — no
+Base Sepolia ETH required.
+
+**Verify:**
+
+- The confirmation card carries a tappable "View on BaseScan" row.
+- Or open the recipient's incoming-transfers page directly:
+  `https://sepolia.basescan.org/address/<X402_PAY_TO_ADDRESS>#tokentxns`
+
+Under the hood:
+
+- `backend/src/concierge/payments.py` — challenge construction, canonical
+  facilitator `paymentPayload` / `paymentRequirements` body, `/verify`
+  before `/settle`.
+- `app/.../x402/SecureWallet.kt` — AES-256-GCM-wrapped seed in the Android
+  Keystore (StrongBox-backed where the device supports it, TEE otherwise),
+  Class-3 biometric per signing op.
+- `app/.../x402/X402Signer.kt` — EIP-712 hashing via web3j's
+  `StructuredDataEncoder` and secp256k1 sign via `Sign.signMessage`.
+
 ## What this shows
 
 - **One agent, two surfaces.** Same `/chat` SSE stream feeds an Android app and a web app.
