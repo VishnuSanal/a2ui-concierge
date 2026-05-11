@@ -34,50 +34,48 @@ def test_present_form_default_includes_three_fields():
     assert names == ["gift_wrap", "note", "ship_to"]
 
 
+import json
 import pytest
+from unittest.mock import patch
 from concierge.agent import GiftAgent
 
 
-class _StubResponse:
-    def __init__(self, content, stop_reason):
-        self.content = content
-        self.stop_reason = stop_reason
+# LiteLLM-shaped fakes: choices[0].message.{content, tool_calls},
+# choices[0].finish_reason.
 
-
-class _StubBlock:
+class _F:  # generic attribute bag
     def __init__(self, **kw):
         self.__dict__.update(kw)
-        self.type = kw["type"]
 
 
-class _StubMessages:
-    def __init__(self, scripted):
-        self.scripted = list(scripted)
-    async def create(self, **kw):
-        return self.scripted.pop(0)
+def _resp(text=None, tool_calls=None, finish_reason="stop"):
+    msg = _F(content=text, tool_calls=tool_calls or None)
+    return _F(choices=[_F(message=msg, finish_reason=finish_reason)])
 
 
-class _StubClient:
-    def __init__(self, scripted):
-        self.messages = _StubMessages(scripted)
+def _tool_call(id_, name, args):
+    return _F(id=id_, function=_F(name=name, arguments=json.dumps(args)))
 
 
 @pytest.mark.asyncio
 async def test_agent_emits_a2ui_then_end():
     scripted = [
-        _StubResponse(
-            content=[_StubBlock(type="tool_use", id="t1",
-                                name="present_chips",
-                                input={"question": "Vibe?",
-                                       "options": [{"value": "jewelry", "label": "Jewelry"}]})],
-            stop_reason="tool_use",
+        _resp(
+            tool_calls=[_tool_call("t1", "present_chips", {
+                "question": "Vibe?",
+                "options": [{"value": "jewelry", "label": "Jewelry"}],
+            })],
+            finish_reason="tool_calls",
         ),
-        _StubResponse(
-            content=[_StubBlock(type="text", text="(awaiting selection)")],
-            stop_reason="end_turn",
-        ),
+        _resp(text="(awaiting selection)", finish_reason="stop"),
     ]
-    agent = GiftAgent(client=_StubClient(scripted))
-    kinds = [e.kind async for e in agent.turn("Need a gift for my sister")]
+    queue = list(scripted)
+
+    async def fake_acompletion(**_kw):
+        return queue.pop(0)
+
+    with patch("concierge.agent.acompletion", fake_acompletion):
+        agent = GiftAgent()
+        kinds = [e.kind async for e in agent.turn("Need a gift for my sister")]
     assert "a2ui" in kinds
     assert kinds[-1] == "end"

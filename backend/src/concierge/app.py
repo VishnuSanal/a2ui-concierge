@@ -30,12 +30,20 @@ async def chat(body: ChatBody) -> EventSourceResponse:
     agent = _sessions[body.sessionId]
 
     async def event_stream():
-        async for ev in agent.turn(body.userMessage):
-            if ev.kind == "end":
-                yield {"event": "end", "data": "{}"}
-            elif ev.kind == "a2ui":
-                yield {"event": "a2ui", "data": json.dumps(ev.payload)}
-            else:
-                yield {"event": "text", "data": json.dumps({"text": ev.payload})}
+        # Catch agent failures (e.g. Anthropic 400/429, Gemini safety filter)
+        # and surface them as a text bubble + clean `end`, otherwise the SSE
+        # stream hangs and the client sits on a thinking indicator forever.
+        try:
+            async for ev in agent.turn(body.userMessage):
+                if ev.kind == "end":
+                    yield {"event": "end", "data": "{}"}
+                elif ev.kind == "a2ui":
+                    yield {"event": "a2ui", "data": json.dumps(ev.payload)}
+                else:
+                    yield {"event": "text", "data": json.dumps({"text": ev.payload})}
+        except Exception as e:
+            msg = f"⚠️ {type(e).__name__}: {e}"
+            yield {"event": "text", "data": json.dumps({"text": msg})}
+            yield {"event": "end", "data": "{}"}
 
     return EventSourceResponse(event_stream())

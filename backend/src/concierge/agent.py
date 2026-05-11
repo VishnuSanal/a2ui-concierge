@@ -1,11 +1,48 @@
 from __future__ import annotations
 from typing import Any, AsyncIterator
+import copy
 import json
-from anthropic import AsyncAnthropic
+import os
+from litellm import acompletion
 from concierge.prompts import SYSTEM_PROMPT
 from concierge.tools import TOOL_SCHEMAS, run_tool
 
-MODEL = "claude-sonnet-4-6"
+# Provider-prefixed LiteLLM model id. Override via MODEL env var.
+# Examples:
+#   anthropic/claude-haiku-4-5    (cheap, native caching, current default)
+#   anthropic/claude-sonnet-4-6   (smarter, ~3x more expensive)
+#   gemini/gemini-2.5-flash       (cheapest credible option)
+#   gemini/gemini-2.5-flash-lite  (cheapest)
+#   openai/gpt-4o-mini            (cheap OpenAI option)
+MODEL = os.getenv("MODEL", "anthropic/claude-haiku-4-5")
+MAX_TOKENS = int(os.getenv("MAX_TOKENS", "768"))
+HISTORY_TURN_LIMIT = 12
+
+_IS_ANTHROPIC = MODEL.startswith("anthropic/") or MODEL.startswith("claude-")
+
+
+def _to_openai_tools(schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Anthropic-style tool schemas → OpenAI/LiteLLM 'function' tools."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": s["name"],
+                "description": s.get("description", ""),
+                "parameters": s["input_schema"],
+            },
+        }
+        for s in schemas
+    ]
+
+
+_OPENAI_TOOLS: list[dict[str, Any]] = _to_openai_tools(TOOL_SCHEMAS)
+# Anthropic-only: tag the last tool with ephemeral cache_control so the tool
+# schema array is read at ~10% cost on every call after the first in a turn.
+# LiteLLM passes the field through; non-Anthropic providers ignore it.
+if _IS_ANTHROPIC and _OPENAI_TOOLS:
+    _OPENAI_TOOLS = copy.deepcopy(_OPENAI_TOOLS)
+    _OPENAI_TOOLS[-1]["cache_control"] = {"type": "ephemeral"}
 
 
 class AgentEvent:
@@ -15,59 +52,110 @@ class AgentEvent:
 
 
 class GiftAgent:
-    def __init__(self, client: AsyncAnthropic | None = None):
-        self.client = client or AsyncAnthropic()
+    def __init__(self) -> None:
+        # OpenAI-style history: assistant {content, tool_calls}, user content,
+        # role:"tool" entries for tool results. LiteLLM translates per provider.
         self.history: list[dict[str, Any]] = []
 
-    async def turn(self, user_message: str) -> AsyncIterator[AgentEvent]:
-        self.history.append({"role": "user", "content": user_message})
+    def _trim_history(self) -> None:
+        max_entries = HISTORY_TURN_LIMIT * 2
+        if len(self.history) <= max_entries:
+            return
+        drop = len(self.history) - max_entries
+        # Snap to next user-role boundary so we never start mid-tool-loop.
+        while drop < len(self.history) and self.history[drop].get("role") != "user":
+            drop += 1
+        self.history = self.history[drop:]
 
-        while True:
-            response = await self.client.messages.create(
-                model=MODEL,
-                max_tokens=2048,
-                system=[{
+    def _system(self) -> list[dict[str, Any]]:
+        if _IS_ANTHROPIC:
+            # Cache the (large) system prompt across all calls.
+            return [{
+                "role": "system",
+                "content": [{
                     "type": "text",
                     "text": SYSTEM_PROMPT,
                     "cache_control": {"type": "ephemeral"},
                 }],
-                tools=TOOL_SCHEMAS,
-                messages=self.history,
+            }]
+        return [{"role": "system", "content": SYSTEM_PROMPT}]
+
+    def _messages_for_call(self) -> list[dict[str, Any]]:
+        msgs: list[dict[str, Any]] = self._system() + self.history
+        # Cache the running conversation prefix on Anthropic by tagging the
+        # last user-role string content as a list-of-blocks with cache_control.
+        # We only do this for plain user messages — tool-result rounds in a
+        # multi-step turn skip the breakpoint to keep things simple.
+        if _IS_ANTHROPIC and msgs and msgs[-1].get("role") == "user":
+            last = copy.deepcopy(msgs[-1])
+            content = last.get("content")
+            if isinstance(content, str):
+                last["content"] = [{
+                    "type": "text", "text": content,
+                    "cache_control": {"type": "ephemeral"},
+                }]
+                msgs = msgs[:-1] + [last]
+        return msgs
+
+    async def turn(self, user_message: str) -> AsyncIterator[AgentEvent]:
+        self.history.append({"role": "user", "content": user_message})
+        self._trim_history()
+
+        while True:
+            response = await acompletion(
+                model=MODEL,
+                max_tokens=MAX_TOKENS,
+                tools=_OPENAI_TOOLS,
+                messages=self._messages_for_call(),
             )
+            # Gemini occasionally returns an empty `choices` list (safety
+            # filter trip, blocked completion) — guard so the agent surfaces
+            # something instead of dying on a bare IndexError.
+            choices = list(response.choices or [])
+            if not choices:
+                yield AgentEvent("text", "I had trouble generating a reply. Mind rephrasing?")
+                yield AgentEvent("end", None)
+                return
+            choice = choices[0]
+            msg = choice.message
+            text: str | None = msg.content
+            tool_calls = list(msg.tool_calls or [])
 
-            assistant_blocks: list[dict[str, Any]] = []
-            tool_uses: list[dict[str, Any]] = []
+            if text and text.strip():
+                yield AgentEvent("text", text)
 
-            for block in response.content:
-                if block.type == "text":
-                    assistant_blocks.append({"type": "text", "text": block.text})
-                    if block.text.strip():
-                        yield AgentEvent("text", block.text)
-                elif block.type == "tool_use":
-                    assistant_blocks.append({
-                        "type": "tool_use", "id": block.id,
-                        "name": block.name, "input": block.input,
-                    })
-                    tool_uses.append({"id": block.id, "name": block.name, "input": block.input})
+            # Persist the assistant turn (text + any tool_calls) to history.
+            assistant_entry: dict[str, Any] = {"role": "assistant", "content": text or ""}
+            if tool_calls:
+                assistant_entry["tool_calls"] = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
+                    }
+                    for tc in tool_calls
+                ]
+            self.history.append(assistant_entry)
 
-            self.history.append({"role": "assistant", "content": assistant_blocks})
-
-            if response.stop_reason != "tool_use":
+            if choice.finish_reason != "tool_calls" or not tool_calls:
                 yield AgentEvent("end", None)
                 return
 
-            tool_results: list[dict[str, Any]] = []
-            for tu in tool_uses:
-                output = run_tool(tu["name"], tu["input"])
+            # Execute tools and append role:"tool" results.
+            for tc in tool_calls:
+                raw_args = tc.function.arguments
+                args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
+                output = run_tool(tc.function.name, args)
                 if "_a2ui" in output:
                     yield AgentEvent("a2ui", output["_a2ui"])
-                    tool_results.append({
-                        "type": "tool_result", "tool_use_id": tu["id"],
-                        "content": json.dumps({"rendered": True}),
-                    })
+                    tool_content = json.dumps({"rendered": True})
                 else:
-                    tool_results.append({
-                        "type": "tool_result", "tool_use_id": tu["id"],
-                        "content": json.dumps(output),
-                    })
-            self.history.append({"role": "user", "content": tool_results})
+                    tool_content = json.dumps(output)
+                self.history.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": tool_content,
+                })
