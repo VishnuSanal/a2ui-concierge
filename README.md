@@ -14,7 +14,11 @@ text.
 
 ## Video demo
 
-▶ **[Watch it on YouTube](https://www.youtube.com/watch?v=eTi_LHUJs5Y)** — ~1-minute walkthrough showing the same A2UI components rendering on Android (Compose + WebView) and the web.
+Same A2UI components, two surfaces — no rewrites between them.
+
+| [![Android walkthrough](https://img.youtube.com/vi/eTi_LHUJs5Y/maxresdefault.jpg)](https://www.youtube.com/watch?v=eTi_LHUJs5Y) | [![Web walkthrough](https://img.youtube.com/vi/65klmTq2cLQ/maxresdefault.jpg)](https://www.youtube.com/watch?v=65klmTq2cLQ) |
+| :---: | :---: |
+| ▶ **[Android walkthrough](https://www.youtube.com/watch?v=eTi_LHUJs5Y)** — Compose chrome + Lit components in a WebView. | ▶ **[Web walkthrough](https://www.youtube.com/watch?v=65klmTq2cLQ)** — same Lit bundle, browser-native. |
 
 ## What this shows
 
