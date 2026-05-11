@@ -29,11 +29,26 @@ PAY_TO_ADDRESS = os.getenv(
     # Demo recipient — override in backend/.env for a real run.
     "0x0000000000000000000000000000000000000000",
 )
-FACILITATOR_URL = os.getenv(
-    "X402_FACILITATOR_URL",
-    "https://x402.org/facilitator/settle",
-)
+# x402 protocol version the public facilitator speaks. Sent on /verify and
+# /settle bodies.
+X402_VERSION = 1
+# Base URL for the facilitator. /verify and /settle are appended. Default
+# is the free hosted facilitator at x402.org which proxies to Coinbase CDP.
+FACILITATOR_BASE = os.getenv(
+    "X402_FACILITATOR_BASE",
+    # Note: the apex (x402.org) 308-redirects to www. Pre-resolve here so a
+    # POST doesn't lose its body across the hop.
+    "https://www.x402.org/facilitator",
+).rstrip("/")
 SETTLE_REAL = os.getenv("X402_SETTLE_REAL", "0") == "1"
+# A stable identifier the facilitator echoes back in receipts. Doesn't have
+# to be reachable — it's just a payment-context tag.
+RESOURCE_URL = os.getenv("X402_RESOURCE_URL", "https://lumen-concierge.demo/order")
+# USDC EIP-712 domain bits on Base Sepolia. The Android signer uses these
+# to hash TransferWithAuthorization; the facilitator uses them to recover
+# the signer address.
+USDC_NAME = os.getenv("X402_USDC_NAME", "USDC")
+USDC_VERSION = os.getenv("X402_USDC_VERSION", "2")
 
 # USDC has 6 decimals. ``amount_units`` in the challenge is base units, so
 # $1.00 == 1_000_000.
@@ -79,6 +94,9 @@ def build_challenge(*, total_dollars: float, label: str) -> dict[str, Any]:
         "nonce": nonce,
         "label": label,
         "order_id": order_id,
+        # EIP-712 domain bits the client needs to hash
+        # TransferWithAuthorization correctly.
+        "extra": {"name": USDC_NAME, "version": USDC_VERSION},
     }
     _ORDERS[order_id] = {"challenge": challenge, "settled": False, "tx_hash": None}
     print(f"[x402] built challenge order_id={order_id} total=${total_dollars:.2f} | _ORDERS keys={list(_ORDERS.keys())}", flush=True)
@@ -110,19 +128,83 @@ async def settle(*, order_id: str, signed_envelope: dict[str, Any]) -> dict[str,
     return {"tx_hash": tx_hash, "explorer_url": _basescan_url(tx_hash)}
 
 
+def _payment_requirements(challenge: dict[str, Any]) -> dict[str, Any]:
+    """Translate our internal challenge shape into the x402 facilitator's
+    `paymentRequirements` object. The facilitator uses this to (a) recover
+    the EIP-712 domain for signature verification and (b) cross-check the
+    signed authorization (payTo, value, validity window) before settling.
+    All numeric fields are strings — that's what the spec demands.
+    """
+    return {
+        "scheme": "exact",
+        "network": challenge["network"],
+        "maxAmountRequired": str(challenge["amount_units"]),
+        "resource": RESOURCE_URL,
+        "description": challenge["label"],
+        "mimeType": "",
+        "payTo": challenge["pay_to"],
+        "maxTimeoutSeconds": CHALLENGE_VALIDITY_SECONDS,
+        "asset": challenge["asset"],
+        "extra": challenge["extra"],
+    }
+
+
+def _payment_payload(challenge: dict[str, Any], signed: dict[str, Any]) -> dict[str, Any]:
+    """Translate a client-signed envelope into the x402 facilitator's
+    `paymentPayload` object. The client is expected to send canonical
+    camelCase EIP-3009 fields plus a `signature` hex string."""
+    return {
+        "x402Version": X402_VERSION,
+        "scheme": "exact",
+        "network": challenge["network"],
+        "payload": {
+            "signature": signed["signature"],
+            "authorization": {
+                "from": signed["from"],
+                "to": signed["to"],
+                "value": str(signed["value"]),
+                "validAfter": str(signed["validAfter"]),
+                "validBefore": str(signed["validBefore"]),
+                "nonce": signed["nonce"],
+            },
+        },
+    }
+
+
 async def _settle_with_facilitator(challenge: dict[str, Any], signed: dict[str, Any]) -> str:
-    """Forward the signed EIP-3009 envelope to an x402 facilitator and
-    return the on-chain tx hash. Imported lazily so the demo path doesn't
-    require httpx in a cold start."""
+    """Forward the signed EIP-3009 envelope to an x402 facilitator, return
+    the on-chain tx hash. Calls /verify first so we surface a precise error
+    (signature bad vs settlement bad) instead of guessing at facilitator
+    return codes. Imported lazily so the mock path doesn't require httpx."""
     import httpx
-    payload = {"challenge": challenge, "envelope": signed}
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(FACILITATOR_URL, json=payload)
-        resp.raise_for_status()
-        data = resp.json()
-    tx = data.get("tx_hash") or data.get("transaction_hash")
+    body = {
+        "x402Version": X402_VERSION,
+        "paymentPayload": _payment_payload(challenge, signed),
+        "paymentRequirements": _payment_requirements(challenge),
+    }
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        verify_resp = await client.post(f"{FACILITATOR_BASE}/verify", json=body)
+        if verify_resp.status_code >= 400:
+            raise RuntimeError(
+                f"verify failed: {verify_resp.status_code} {verify_resp.text}"
+            )
+        verify = verify_resp.json()
+        if not verify.get("isValid"):
+            raise RuntimeError(
+                f"facilitator rejected signature: {verify.get('invalidReason')}"
+            )
+
+        settle_resp = await client.post(f"{FACILITATOR_BASE}/settle", json=body)
+        if settle_resp.status_code >= 400:
+            raise RuntimeError(
+                f"settle failed: {settle_resp.status_code} {settle_resp.text}"
+            )
+        data = settle_resp.json()
+    if not data.get("success"):
+        raise RuntimeError(f"settle did not succeed: {data.get('errorReason') or data}")
+    tx = data.get("transaction") or data.get("tx_hash") or data.get("transaction_hash")
     if not tx:
-        raise RuntimeError(f"Facilitator did not return tx_hash: {data}")
+        raise RuntimeError(f"facilitator did not return transaction: {data}")
     return tx
 
 
