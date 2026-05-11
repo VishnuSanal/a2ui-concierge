@@ -20,19 +20,50 @@ export class ProductDetail extends LitElement {
     .gallery {
       position: relative;
       background: #f4efe6;
+      /* Hint to the browser that this region is for horizontal panning so
+         vertical-scroll containers don't fight the carousel swipes. */
+      touch-action: pan-x;
     }
+    .close {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      width: 36px; height: 36px;
+      border-radius: 999px;
+      border: 0;
+      background: rgba(20,18,14,0.55);
+      color: #fff;
+      font: inherit;
+      font-size: 18px;
+      line-height: 1;
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      z-index: 2;
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      box-shadow: 0 4px 12px -4px rgba(20,18,14,0.5);
+      transition: transform .08s, background .15s;
+    }
+    .close:active { transform: scale(0.94); background: rgba(20,18,14,0.75); }
     .gallery-track {
       display: flex;
       overflow-x: auto;
-      scroll-snap-type: x mandatory;
+      overflow-y: hidden;
+      /* proximity snap is more forgiving than mandatory on small devices —
+         a half-flick lands on the nearest snap rather than rubber-banding. */
+      scroll-snap-type: x proximity;
+      scroll-snap-stop: always;
       scrollbar-width: none;
-      -webkit-overflow-scrolling: touch;
+      overscroll-behavior-x: contain;
+      touch-action: pan-x;
     }
     .gallery-track::-webkit-scrollbar { display: none; }
     .slide {
       flex: 0 0 100%;
       scroll-snap-align: center;
       width: 100%;
+      pointer-events: auto;
     }
     .slide img {
       width: 100%;
@@ -40,6 +71,10 @@ export class ProductDetail extends LitElement {
       object-fit: cover;
       display: block;
       background: #f4efe6;
+      /* Stop image drag-and-drop from cancelling the pan gesture. */
+      pointer-events: none;
+      user-select: none;
+      -webkit-user-drag: none;
     }
     .dots {
       position: absolute;
@@ -206,6 +241,7 @@ export class ProductDetail extends LitElement {
     const onSale = p.sale_price != null && p.sale_price < p.price;
     return html`
       <div class="gallery">
+        <button class="close" aria-label="Close" @click=${this._close}>✕</button>
         <div class="gallery-track">
           ${images.map(src => html`
             <div class="slide"><img src=${src} alt=${p.name || ""}></div>
@@ -281,6 +317,11 @@ export class ProductDetail extends LitElement {
       component: "product-detail-followup",
       product_id: this.product.id,
       name: this.product.name,
+    }));
+  }
+  _close() {
+    window.AndroidBridge?.onAction(JSON.stringify({
+      component: "product-detail-close",
     }));
   }
 }
