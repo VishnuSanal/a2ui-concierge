@@ -28,9 +28,17 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.diegoz.a2uiconcierge.a2ui.A2uiBridge
 import com.diegoz.a2uiconcierge.a2ui.A2uiWebContent
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 
+/**
+ * Hosts one A2UI v0.8 *surface* inside a chat bubble. ``fragments`` is the
+ * accumulated list of v0.8 messages whose surfaceId matches this bubble
+ * (typically a surfaceUpdate followed by a beginRendering); each is
+ * replayed through ``window.a2ui.ingest`` in order.
+ */
 @Composable
 fun AgentA2uiBubble(
     fragments: List<JsonObject>,
@@ -61,9 +69,9 @@ fun AgentA2uiBubble(
         label = "a2ui-bubble-height",
     )
 
-    val component = fragments.lastOrNull()?.get("component")?.jsonPrimitive?.content
-    val isConfirmation = component == "confirmation-card"
-    val isProductDetail = component == "product-detail"
+    val rootType = primaryComponentType(fragments)
+    val isConfirmation = rootType == "ConfirmationCard"
+    val isProductDetail = rootType == "ProductDetail"
 
     val popScale = remember {
         Animatable(
@@ -75,7 +83,7 @@ fun AgentA2uiBubble(
         )
     }
     val popTranslateY = remember { Animatable(if (isProductDetail) -60f else 0f) }
-    LaunchedEffect(component) {
+    LaunchedEffect(rootType) {
         when {
             isConfirmation -> {
                 popScale.snapTo(0.85f)
@@ -174,4 +182,28 @@ fun A2uiSheetContent(
             modifier = Modifier.fillMaxSize(),
         )
     }
+}
+
+/**
+ * Resolve the root component type from the v0.8 fragment stream.
+ * v0.8 specifies the root by id via ``beginRendering.root``; the first
+ * entry of ``surfaceUpdate.components`` is not guaranteed to be the root,
+ * so we look up by id. Used to pick the per-component entrance animation.
+ */
+private fun primaryComponentType(fragments: List<JsonObject>): String? {
+    val rootId = fragments.firstNotNullOfOrNull { f ->
+        (f["beginRendering"] as? JsonObject)
+            ?.get("root")?.jsonPrimitive?.contentOrNull
+    } ?: return null
+    for (frame in fragments) {
+        val update = frame["surfaceUpdate"] as? JsonObject ?: continue
+        val components = update["components"] as? JsonArray ?: continue
+        for (item in components) {
+            val obj = item as? JsonObject ?: continue
+            if (obj["id"]?.jsonPrimitive?.contentOrNull != rootId) continue
+            val componentObj = obj["component"] as? JsonObject ?: continue
+            return componentObj.keys.firstOrNull()
+        }
+    }
+    return null
 }

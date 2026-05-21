@@ -1,9 +1,21 @@
+// ──────────────────────────────────────────────────────────────────────────
+// REBASE TODO — verify before merge (Claude, on behalf of @dzuluaga, 2026-05-26)
+// Auto-merged during rebase of PR #4 onto main containing PR #1's DPC badge
+// on the confirmation card. Verify the DPC vs. on-chain (USDC) display still
+// switches correctly based on tx_hash / payment_method.
+// ──────────────────────────────────────────────────────────────────────────
 import { LitElement, html, css } from "lit";
 
+// v0.8 custom-catalog component "ConfirmationCard". Props are camelCased
+// per spec convention (orderId, txHash, explorerUrl, shipDate).
 export class ConfirmationCard extends LitElement {
   static properties = {
-    order_id: {}, items: { type: Array }, total: { type: Number },
-    ship_date: {}, tx_hash: {}, explorer_url: {},
+    orderId: {},
+    items: { type: Array },
+    total: { type: Number },
+    shipDate: {},
+    txHash: {},
+    explorerUrl: {},
   };
   static styles = css`
     :host { display: block; margin: 0 12px; font-family: var(--a2ui-font-sans); background: #fff; border: 1px solid #ece8e0; border-radius: var(--a2ui-radius-md); padding: 16px; box-shadow: 0 1px 2px rgba(20, 18, 14, 0.04), 0 6px 16px -10px rgba(20, 18, 14, 0.08); }
@@ -25,14 +37,18 @@ export class ConfirmationCard extends LitElement {
     .dpc-badge .lbl { color: #4a3aa0; font-weight: 600; letter-spacing: .3px; text-transform: uppercase; font-size: 10px; }
     .dpc-badge .sub { color: #6b6973; font-size: 11.5px; margin-top: 2px; }
   `;
+  constructor() {
+    super();
+    this.items = [];
+  }
   render() {
-    const isDpc = this.tx_hash?.startsWith("dpc-");
-    const txShort = this.tx_hash ? `${this.tx_hash.slice(0, 10)}…${this.tx_hash.slice(-8)}` : null;
+    const isDpc = this.txHash?.startsWith("dpc-");
+    const txShort = this.txHash ? `${this.txHash.slice(0, 10)}…${this.txHash.slice(-8)}` : null;
     return html`
       <div class="badge">✓ Order placed</div>
       ${this.items.map(li => html`<div class="row"><span>${li.label}</span><span>$${li.amount}</span></div>`)}
       <div class="row total"><span>Total</span><span>$${this.total}</span></div>
-      <div class="meta">Arrives ${this.ship_date} · #${this.order_id}</div>
+      <div class="meta">Arrives ${this.shipDate} · #${this.orderId}</div>
       ${isDpc ? html`
         <div class="dpc-badge">
           <div class="icon">💳</div>
@@ -41,7 +57,7 @@ export class ConfirmationCard extends LitElement {
             <div class="sub">Paid with digital payment credential</div>
           </div>
         </div>
-      ` : this.tx_hash ? html`
+      ` : this.txHash ? html`
         <button class="tx" type="button" @click=${this._openTxDetail}>
           <div class="lbl"><span>On-chain payment</span><span class="chev">View ›</span></div>
           <div class="hash">${txShort}</div>
@@ -50,24 +66,24 @@ export class ConfirmationCard extends LitElement {
     `;
   }
 
-  // Tap routes through AndroidBridge.onAction so the host can intercept:
-  //  - Android: ChatViewModel opens an in-app tx-detail modal sheet
+  // Surface a v0.8 userAction the host can intercept:
+  //  - Android: ChatViewModel pops an in-app TxDetail modal sheet
   //  - Web:     the index.html shim opens the explorer URL in a new tab
   _openTxDetail() {
-    const payload = {
-      component: "tx-detail-open",
-      order_id: this.order_id,
-      tx_hash: this.tx_hash,
-      explorer_url: this.explorer_url,
-      items: this.items,
-      total: this.total,
-      ship_date: this.ship_date,
-    };
-    if (window.AndroidBridge?.onAction) {
-      window.AndroidBridge.onAction(JSON.stringify(payload));
-    } else if (this.explorer_url) {
-      window.open(this.explorer_url, "_blank", "noreferrer");
-    }
+    this.dispatchEvent(new CustomEvent("a2ui-action", {
+      bubbles: true, composed: true,
+      detail: {
+        name: "tx-detail-open",
+        context: {
+          order_id: this.orderId,
+          tx_hash: this.txHash,
+          explorer_url: this.explorerUrl,
+          items: this.items,
+          total: this.total,
+          ship_date: this.shipDate,
+        },
+      },
+    }));
   }
 }
 customElements.define("a2ui-confirmation-card", ConfirmationCard);

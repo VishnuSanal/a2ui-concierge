@@ -1,5 +1,17 @@
 from concierge.tools import run_tool
 
+
+def _root_props(messages: list[dict], expected_type: str) -> dict:
+    """Extract the root component's resolved props from a (surfaceUpdate,
+    beginRendering) bundle, asserting the expected component type."""
+    su = next(m["surfaceUpdate"] for m in messages if "surfaceUpdate" in m)
+    begin = next(m["beginRendering"] for m in messages if "beginRendering" in m)
+    root = next(c for c in su["components"] if c["id"] == begin["root"])
+    [(component_type, props)] = root["component"].items()
+    assert component_type == expected_type
+    return props
+
+
 def test_search_catalog_returns_results_list():
     out = run_tool("search_catalog", {"category": "jewelry", "price_max": 150})
     assert "results" in out
@@ -16,17 +28,17 @@ def test_place_order_returns_payment_challenge():
         "gift_wrap": True,
         "address": "235 Pine St, Brooklyn NY",
     })
-    payload = out["_a2ui"]
-    assert payload["component"] == "payment-challenge"
-    assert payload["order_id"].startswith("A2UI-")
-    challenge = payload["challenge"]
+    props = _root_props(out["_a2ui"], "PaymentChallenge")
+    assert props["orderId"].startswith("A2UI-")
+    challenge = props["challenge"]
     assert challenge["amount_units"] > 0
     assert challenge["asset"].startswith("0x") and len(challenge["asset"]) == 42
     assert challenge["nonce"].startswith("0x") and len(challenge["nonce"]) == 66
     assert challenge["valid_before"] > challenge["valid_after"]
     # Total = sale_price (or price) + $8 gift wrap; reflected in line items.
-    labels = [li["label"] for li in payload["items"]]
+    labels = [li["label"] for li in props["items"]]
     assert "Gift wrap" in labels
+
 
 def test_present_chips_returns_a2ui_payload():
     out = run_tool("present_chips", {
@@ -34,12 +46,14 @@ def test_present_chips_returns_a2ui_payload():
         "options": [{"value": "jewelry", "label": "Jewelry"}],
     })
     assert "_a2ui" in out
-    assert out["_a2ui"]["component"] == "chip-group"
+    props = _root_props(out["_a2ui"], "ChipGroup")
+    assert props["question"] == {"literalString": "What vibe?"}
+
 
 def test_present_form_default_includes_three_fields():
     out = run_tool("present_form", {})
-    fields = out["_a2ui"]["fields"]
-    names = [f["name"] for f in fields]
+    props = _root_props(out["_a2ui"], "ConciergeForm")
+    names = [f["name"] for f in props["fields"]]
     assert names == ["gift_wrap", "note", "ship_to"]
 
 
@@ -55,7 +69,7 @@ def test_x402_settle_returns_tx_hash():
         "gift_wrap": False,
         "address": "1 Main St",
     })
-    order_id = out["_a2ui"]["order_id"]
+    order_id = _root_props(out["_a2ui"], "PaymentChallenge")["orderId"]
 
     settled = asyncio.run(payments.settle(order_id=order_id, signed_envelope={"x": "stub"}))
     assert settled["tx_hash"].startswith("0x") and len(settled["tx_hash"]) == 66
