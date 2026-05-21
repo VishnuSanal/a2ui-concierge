@@ -38,6 +38,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.diegoz.a2uiconcierge.chat.Message
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -57,8 +61,7 @@ fun ChatScreen(vm: ChatViewModel) {
     val haptic = LocalHapticFeedback.current
     LaunchedEffect(messages.size) {
         val last = messages.lastOrNull()
-        if (last is Message.AgentA2ui && last.fragments.lastOrNull()?.get("component")?.toString()
-                ?.contains("confirmation-card") == true) {
+        if (last is Message.AgentA2ui && rootComponentType(last.fragments) == "ConfirmationCard") {
             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
         }
     }
@@ -132,7 +135,7 @@ fun ChatScreen(vm: ChatViewModel) {
             },
         ) {
             A2uiSheetContent(
-                fragment = sheetFragment,
+                fragments = sheetFragment,
                 onAction = vm::onA2uiAction,
             )
         }
@@ -152,7 +155,7 @@ fun ChatScreen(vm: ChatViewModel) {
             tonalElevation = 0.dp,
         ) {
             A2uiSheetContent(
-                fragment = paymentFragment,
+                fragments = paymentFragment,
                 onAction = vm::onA2uiAction,
             )
         }
@@ -171,7 +174,7 @@ fun ChatScreen(vm: ChatViewModel) {
             tonalElevation = 0.dp,
         ) {
             A2uiSheetContent(
-                fragment = txFragment,
+                fragments = txFragment,
                 onAction = vm::onA2uiAction,
             )
         }
@@ -230,4 +233,28 @@ private fun ChatList(
             }
         }
     }
+}
+
+/**
+ * Inspect the message stream for the root component type. v0.8 specifies
+ * the root by id via ``beginRendering.root`` — looking at the first entry of
+ * ``surfaceUpdate.components`` would mis-classify any surface whose root
+ * isn't authored as the first component definition.
+ */
+private fun rootComponentType(fragments: List<JsonObject>): String? {
+    val rootId = fragments.firstNotNullOfOrNull { f ->
+        (f["beginRendering"] as? JsonObject)
+            ?.get("root")?.jsonPrimitive?.contentOrNull
+    } ?: return null
+    for (f in fragments) {
+        val update = f["surfaceUpdate"] as? JsonObject ?: continue
+        val components = update["components"] as? JsonArray ?: continue
+        for (item in components) {
+            val obj = item as? JsonObject ?: continue
+            if (obj["id"]?.jsonPrimitive?.contentOrNull != rootId) continue
+            val componentObj = obj["component"] as? JsonObject ?: continue
+            return componentObj.keys.firstOrNull()
+        }
+    }
+    return null
 }

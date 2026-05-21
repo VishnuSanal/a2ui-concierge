@@ -36,9 +36,19 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.diegoz.a2uiconcierge.a2ui.A2uiBridge
 import com.diegoz.a2uiconcierge.a2ui.ThemeTokens
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
+/**
+ * Hosts one A2UI v0.8 *surface* inside a chat bubble. ``fragments`` is the
+ * accumulated list of v0.8 messages whose surfaceId matches this bubble
+ * (typically a surfaceUpdate followed by a beginRendering); each is
+ * replayed through ``window.a2ui.ingest`` in order, so the interpreter in
+ * the WebView builds the same surface state it would over an SSE stream.
+ */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun AgentA2uiBubble(
@@ -47,7 +57,7 @@ fun AgentA2uiBubble(
     isFaded: Boolean = false,
 ) {
     val bridge = remember { A2uiBridge() }
-    val payload = fragments.lastOrNull()?.toString().orEmpty()
+    val payload = fragmentsAsJsArray(fragments)
     val density = LocalDensity.current
 
     LaunchedEffect(bridge) {
@@ -70,9 +80,9 @@ fun AgentA2uiBubble(
         label = "a2ui-bubble-height",
     )
 
-    val component = fragments.lastOrNull()?.get("component")?.jsonPrimitive?.content
-    val isConfirmation = component == "confirmation-card"
-    val isProductDetail = component == "product-detail"
+    val rootType = primaryComponentType(fragments)
+    val isConfirmation = rootType == "ConfirmationCard"
+    val isProductDetail = rootType == "ProductDetail"
 
     val popScale = remember {
         Animatable(
@@ -84,7 +94,7 @@ fun AgentA2uiBubble(
         )
     }
     val popTranslateY = remember { Animatable(if (isProductDetail) -60f else 0f) }
-    LaunchedEffect(component) {
+    LaunchedEffect(rootType) {
         when {
             isConfirmation -> {
                 popScale.snapTo(0.85f)
@@ -168,12 +178,11 @@ fun AgentA2uiBubble(
                                 "window.a2ui.applyTheme(${ThemeTokens.asJson()});",
                                 null,
                             )
-                            val initial = fragments.lastOrNull()?.toString().orEmpty()
-                            if (initial.isNotEmpty()) {
+                            if (payload.isNotEmpty()) {
                                 view.evaluateJavascript(
-                                    "window.a2ui.render($initial);", null,
+                                    "window.a2ui.ingest($payload);", null,
                                 )
-                                view.tag = initial
+                                view.tag = payload
                             } else {
                                 view.tag = ""
                             }
@@ -186,7 +195,13 @@ fun AgentA2uiBubble(
                 val lastRendered = wv.tag as? String ?: return@AndroidView
                 if (lastRendered != payload && payload.isNotEmpty()) {
                     wv.tag = payload
-                    wv.evaluateJavascript("window.a2ui.render($payload);", null)
+                    // Re-ingest from scratch: reset clears prior surface
+                    // buffers so the new message stream is interpreted as a
+                    // fresh sequence (same surfaceId would otherwise merge).
+                    wv.evaluateJavascript(
+                        "window.a2ui.reset(); window.a2ui.ingest($payload);",
+                        null,
+                    )
                 }
             },
         )
@@ -194,26 +209,23 @@ fun AgentA2uiBubble(
 }
 
 /**
- * Variant of the A2UI host used inside a ModalBottomSheet. Drops the
- * height-channel animation so the WebView fills the available sheet area and
- * its own native scrolling handles overflow (carousel + variants + actions
- * in product-detail can run taller than the sheet). fillMaxSize keeps the
- * sheet edge-to-edge regardless of content.
+ * Modal-sheet host variant. Drops the height-channel animation so the
+ * WebView fills the available sheet area and its own native scrolling
+ * handles overflow.
  */
 @SuppressLint("SetJavaScriptEnabled", "ClickableViewAccessibility")
 @Composable
 fun A2uiSheetContent(
-    fragment: JsonObject,
+    fragments: List<JsonObject>,
     onAction: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val bridge = remember { A2uiBridge() }
-    val payload = fragment.toString()
+    val payload = fragmentsAsJsArray(fragments)
 
     LaunchedEffect(bridge) {
         for (json in bridge.actions) onAction(json)
     }
-    // Drain resizes so the channel never blocks; we ignore the values here.
     LaunchedEffect(bridge) {
         for (px in bridge.resizes) Unit
     }
@@ -230,13 +242,6 @@ fun A2uiSheetContent(
                     setBackgroundColor(0)
                     addJavascriptInterface(bridge, "AndroidBridge")
                     bridge.webView = this
-                    // The ModalBottomSheet wraps this WebView in a vertical
-                    // drag-to-dismiss handler that aggressively claims any
-                    // gesture once it crosses the touch slop. That kills
-                    // horizontal carousel swipes mid-flick. Tell the parent
-                    // to keep its hands off while a touch is in progress over
-                    // the WebView. Drag-to-dismiss still works via the sheet
-                    // handle above this view.
                     setOnTouchListener { v, ev ->
                         when (ev.actionMasked) {
                             android.view.MotionEvent.ACTION_DOWN ->
@@ -260,7 +265,7 @@ fun A2uiSheetContent(
                                 "window.a2ui.applyTheme(${ThemeTokens.asJson()});",
                                 null,
                             )
-                            view.evaluateJavascript("window.a2ui.render($payload);", null)
+                            view.evaluateJavascript("window.a2ui.ingest($payload);", null)
                             view.tag = payload
                         }
                     }
@@ -271,9 +276,46 @@ fun A2uiSheetContent(
                 val lastRendered = wv.tag as? String ?: return@AndroidView
                 if (lastRendered != payload) {
                     wv.tag = payload
-                    wv.evaluateJavascript("window.a2ui.render($payload);", null)
+                    wv.evaluateJavascript(
+                        "window.a2ui.reset(); window.a2ui.ingest($payload);",
+                        null,
+                    )
                 }
             },
         )
     }
+}
+
+/**
+ * Serialise the per-bubble fragment list as a JS-array literal suitable
+ * for ``window.a2ui.ingest(...)``. An empty list serialises to ``""`` so
+ * callers can guard with ``isNotEmpty``.
+ */
+private fun fragmentsAsJsArray(fragments: List<JsonObject>): String {
+    if (fragments.isEmpty()) return ""
+    return fragments.joinToString(prefix = "[", postfix = "]", separator = ",") { it.toString() }
+}
+
+/**
+ * Resolve the root component type from the fragment stream. v0.8 specifies
+ * the root by id via ``beginRendering.root``; the first entry of
+ * ``surfaceUpdate.components`` is not guaranteed to be the root, so we look
+ * up by id. Used to pick the per-component entrance animation.
+ */
+private fun primaryComponentType(fragments: List<JsonObject>): String? {
+    val rootId = fragments.firstNotNullOfOrNull { f ->
+        (f["beginRendering"] as? JsonObject)
+            ?.get("root")?.jsonPrimitive?.contentOrNull
+    } ?: return null
+    for (frame in fragments) {
+        val update = frame["surfaceUpdate"] as? JsonObject ?: continue
+        val components = update["components"] as? JsonArray ?: continue
+        for (item in components) {
+            val obj = item as? JsonObject ?: continue
+            if (obj["id"]?.jsonPrimitive?.contentOrNull != rootId) continue
+            val componentObj = obj["component"] as? JsonObject ?: continue
+            return componentObj.keys.firstOrNull()
+        }
+    }
+    return null
 }

@@ -1,7 +1,15 @@
 import { LitElement, html, css } from "lit";
 
+// v0.8 custom-catalog component "ConciergeForm". Field types `toggle` and
+// `text` correspond to standard-catalog CheckBox and TextField; `address`
+// is a custom field type for the saved-address pill picker. `maxLength`
+// is camelCased per the standard-catalog TextField convention.
 export class ConciergeForm extends LitElement {
-  static properties = { fields: { type: Array }, values: { state: true } };
+  static properties = {
+    fields: { type: Array },
+    action: { type: Object },
+    values: { state: true },
+  };
   static styles = css`
     :host { display: block; margin: 0 12px; font-family: var(--a2ui-font-sans); background: #fff; border: 1px solid #ece8e0; border-radius: var(--a2ui-radius-md); padding: 14px; box-shadow: 0 1px 2px rgba(20, 18, 14, 0.04), 0 6px 16px -10px rgba(20, 18, 14, 0.08); }
     .row { margin-bottom: 12px; }
@@ -25,7 +33,12 @@ export class ConciergeForm extends LitElement {
     .pill .addr-line { color: #6b6973; font-size: 12px; margin-top: 2px; }
     .pill .text { display: flex; flex-direction: column; }
   `;
-  constructor() { super(); this.values = {}; }
+  constructor() {
+    super();
+    this.fields = [];
+    this.action = { name: "form" };
+    this.values = {};
+  }
   render() {
     return html`
       ${this.fields.map(f => this._renderField(f))}
@@ -41,7 +54,7 @@ export class ConciergeForm extends LitElement {
     }
     if (f.type === "text") {
       return html`<div class="row"><div class="label">${f.label}</div>
-        <textarea rows="2" maxlength=${f.max_length || 200} @input=${e => this._set(f.name, e.target.value)}></textarea>
+        <textarea rows="2" maxlength=${f.maxLength || 200} @input=${e => this._set(f.name, e.target.value)}></textarea>
       </div>`;
     }
     if (f.type === "address") {
@@ -70,7 +83,10 @@ export class ConciergeForm extends LitElement {
   }
   _set(name, value) { this.values = { ...this.values, [name]: value }; }
   _submit() {
-    window.AndroidBridge?.onAction(JSON.stringify({ component: "form", values: this.values }));
+    this.dispatchEvent(new CustomEvent("a2ui-action", {
+      bubbles: true, composed: true,
+      detail: { name: this.action?.name || "form", context: { values: this.values } },
+    }));
   }
 }
 customElements.define("a2ui-form", ConciergeForm);

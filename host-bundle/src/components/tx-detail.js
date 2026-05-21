@@ -1,23 +1,23 @@
 import { LitElement, html, css } from "lit";
 
 /**
- * Transaction-detail sheet content. Rendered inside a modal bottom sheet on
- * Android (and as a fallback on the web). All fields are passed in from the
- * confirmation-card click — no network lookup needed since we already have
- * the data client-side at confirmation time. A "View on BaseScan" button is
- * the escape hatch for full on-chain details.
+ * v0.8 custom-catalog component "TxDetail". Transaction-detail sheet
+ * content, rendered inside a modal bottom sheet on Android (and as a
+ * fallback on the web). Props camelCased per spec convention. All fields
+ * are passed in from the confirmation-card click — no network lookup
+ * needed since we already have the data client-side at confirmation time.
  */
 export class TxDetail extends LitElement {
   static properties = {
-    order_id: {},
-    tx_hash: {},
-    explorer_url: {},
+    orderId: {},
+    txHash: {},
+    explorerUrl: {},
     network: {},
-    amount_display: {},
+    amountDisplay: {},
     total: { type: Number },
     items: { type: Array },
-    ship_date: {},
-    pay_to: {},
+    shipDate: {},
+    payTo: {},
   };
 
   static styles = css`
@@ -107,14 +107,15 @@ export class TxDetail extends LitElement {
 
   constructor() {
     super();
+    this.items = [];
     this.network = "base-sepolia";
     this._copied = false;
   }
 
   render() {
-    const txShort = this.tx_hash ? `${this.tx_hash.slice(0, 10)}…${this.tx_hash.slice(-8)}` : "—";
+    const txShort = this.txHash ? `${this.txHash.slice(0, 10)}…${this.txHash.slice(-8)}` : "—";
     const networkLabel = this.network === "base-sepolia" ? "Base Sepolia (testnet)" : this.network;
-    const totalLabel = this.amount_display || (this.total != null ? `$${this.total}` : "—");
+    const totalLabel = this.amountDisplay || (this.total != null ? `$${this.total}` : "—");
 
     return html`
       <button class="close" aria-label="Close" @click=${this._close}>✕</button>
@@ -141,10 +142,10 @@ export class TxDetail extends LitElement {
             <button class="copy ${this._copied ? "copied" : ""}" @click=${this._copy}>${this._copied ? "Copied" : "Copy"}</button>
           </span>
         </div>
-        ${this.pay_to ? html`
+        ${this.payTo ? html`
           <div class="row">
             <span class="k">Paid to</span>
-            <span class="v mono">${this.pay_to.slice(0, 10)}…${this.pay_to.slice(-6)}</span>
+            <span class="v mono">${this.payTo.slice(0, 10)}…${this.payTo.slice(-6)}</span>
           </div>
         ` : null}
       </div>
@@ -154,14 +155,14 @@ export class TxDetail extends LitElement {
           <div class="row"><span class="k">${li.label}</span><span class="v">$${li.amount}</span></div>
         `)}
         <div class="row total"><span class="k">Order total</span><span class="v">${totalLabel}</span></div>
-        ${this.ship_date ? html`
-          <div class="row"><span class="k">Arrives</span><span class="v">${this.ship_date}</span></div>
+        ${this.shipDate ? html`
+          <div class="row"><span class="k">Arrives</span><span class="v">${this.shipDate}</span></div>
         ` : null}
-        <div class="row"><span class="k">Order ID</span><span class="v">#${this.order_id || "—"}</span></div>
+        <div class="row"><span class="k">Order ID</span><span class="v">#${this.orderId || "—"}</span></div>
       </div>
 
-      ${this.explorer_url ? html`
-        <a class="basescan" href=${this.explorer_url} target="_blank" rel="noreferrer">View on BaseScan ↗</a>
+      ${this.explorerUrl ? html`
+        <a class="basescan" href=${this.explorerUrl} target="_blank" rel="noreferrer">View on BaseScan ↗</a>
       ` : null}
 
       <div class="meta">Settled via x402 ${this.network === "base-sepolia" ? "on Base Sepolia testnet" : ""}.
@@ -170,15 +171,16 @@ export class TxDetail extends LitElement {
   }
 
   _close() {
-    window.AndroidBridge?.onAction(JSON.stringify({
-      component: "tx-detail-close",
+    this.dispatchEvent(new CustomEvent("a2ui-action", {
+      bubbles: true, composed: true,
+      detail: { name: "tx-detail-close", context: {} },
     }));
   }
 
   async _copy() {
-    if (!this.tx_hash) return;
+    if (!this.txHash) return;
     try {
-      await navigator.clipboard?.writeText(this.tx_hash);
+      await navigator.clipboard?.writeText(this.txHash);
       this._copied = true;
       this.requestUpdate();
       setTimeout(() => { this._copied = false; this.requestUpdate(); }, 1400);

@@ -1,7 +1,19 @@
 import { LitElement, html, css } from "lit";
 
+// v0.8 custom-catalog component "ChipGroup". Mirrors the standard-catalog
+// MultipleChoice shape (variant: chips, maxAllowedSelections: 1) but adds
+// a `question` label and a single primary action. Selection fires an
+// `a2ui-action` event; the shim wraps it in a v0.8 userAction envelope.
 export class ChipGroup extends LitElement {
-  static properties = { question: {}, options: { type: Array }, selected: {} };
+  static properties = {
+    question: {},
+    options: { type: Array },
+    selections: { type: Array },
+    maxAllowedSelections: { type: Number, attribute: false },
+    variant: {},
+    action: { type: Object },
+    selected: { state: true },
+  };
   static styles = css`
     :host { display: block; margin: 0 12px; padding: 14px 16px; border: 1px solid #ece8e0; border-radius: var(--a2ui-radius-md); background: #fff; font-family: var(--a2ui-font-sans); box-shadow: 0 1px 2px rgba(20, 18, 14, 0.04), 0 6px 16px -10px rgba(20, 18, 14, 0.08); }
     .q { font-weight: 600; margin-bottom: 10px; font-size: 14px; color: #1B1B1F; }
@@ -9,7 +21,15 @@ export class ChipGroup extends LitElement {
     button:active { transform: scale(0.97); }
     button[aria-pressed="true"] { background: var(--a2ui-color-accent); color: #fff; border-color: var(--a2ui-color-accent); }
   `;
-  constructor() { super(); this.options = []; this.selected = null; }
+  constructor() {
+    super();
+    this.options = [];
+    this.selections = [];
+    this.maxAllowedSelections = 1;
+    this.variant = "chips";
+    this.action = { name: "chip-group" };
+    this.selected = null;
+  }
   render() {
     return html`
       <div class="q">${this.question}</div>
@@ -20,7 +40,10 @@ export class ChipGroup extends LitElement {
   }
   _pick(value) {
     this.selected = value;
-    window.AndroidBridge?.onAction(JSON.stringify({ component: "chip-group", value }));
+    this.dispatchEvent(new CustomEvent("a2ui-action", {
+      bubbles: true, composed: true,
+      detail: { name: this.action?.name || "chip-group", context: { value } },
+    }));
   }
 }
 customElements.define("a2ui-chip-group", ChipGroup);
